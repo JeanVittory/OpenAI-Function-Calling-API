@@ -6,6 +6,13 @@ import { ApiBody } from '@nestjs/swagger';
 export class AppController {
   constructor(private readonly appService: AppService) {}
 
+  /**
+   * Here we use a POST method since I consider that, although a state is not being altered
+   * and GET might seem like a better method as it is an idempotent procedure, that is,
+   * its response is not predictable, in principle it does not need to be cached since each
+   * question changes depending on its context and the response will always be dynamic,
+   * it seems more appropriate to use POST as the HTTP protocol verb.
+   */
   @Post()
   @ApiBody({ type: MessageDTO })
   openaiRequest(@Body() request: MessageDTO): Promise<string | undefined> {

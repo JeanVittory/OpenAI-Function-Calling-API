@@ -39,6 +39,8 @@ Once you have configured the `.env` file, you can run the command
 npm run start:dev
 ```
 
+For testing purposes use `http://localhost:3000/` in Postman
+
 ## Docker
 
 Docker has been added as a layer of security and stability. If you want to use it, make sure you have Docker installed, and once you have it, run:

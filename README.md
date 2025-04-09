@@ -39,7 +39,7 @@ Once you have configured the `.env` file, you can run the command
 npm run start:dev
 ```
 
-For testing purposes use `http://localhost:3000/` in Postman
+For testing purposes use `http://localhost:3000/` in Postman with the POST method
 
 ## Docker
 

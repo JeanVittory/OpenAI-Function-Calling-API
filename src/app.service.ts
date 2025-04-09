@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, InternalServerErrorException } from '@nestjs/common';
 import {
   FinalCall,
   FunctionAIResponse,
@@ -25,43 +25,9 @@ export class AppService {
   ) {}
 
   /**
-   * This method executes `convertCurrencies` and `searchProducts` in a chain
-   * when the user needs to perform currency conversion for a specific product.
+   * Entry point of the service. It evaluates the different possible paths a query can take
+   * and returns the final response to the controller.
    */
-  async executeChainedFlow(
-    functions: string[],
-    query: string,
-    requiredCurrency: string,
-  ): Promise<string> {
-    let currentProduct: ExtractPriceFromDB[] | undefined;
-    const currentCurrency = 'USD';
-
-    for (const func of functions) {
-      if (func === 'searchProducts') {
-        currentProduct = await this.extractPriceFromText(query);
-      } else if (func === 'convertCurrencies') {
-        if (currentProduct) {
-          let message = '';
-
-          for (const product of currentProduct) {
-            const result = await this.getPlainRateAndCurrencies(
-              product.amount,
-              currentCurrency,
-              requiredCurrency,
-            );
-
-            message += `The price of ${product.productName} is approximately USD ${product.amount}, which is equivalent to ${result} in ${requiredCurrency}.\n`;
-          }
-
-          return message.trim();
-        } else {
-          return 'Could not extract amount to convert.';
-        }
-      }
-    }
-    return '';
-  }
-
   async callChatGPT({ message }: MessageDTO): Promise<string | undefined> {
     try {
       // We instance the OpenAI client
@@ -103,6 +69,7 @@ export class AppService {
         if (functionName === 'searchProducts') {
           resultQuery = await this.searchProducts(functionParameters.query);
         }
+
         if (functionName === 'convertCurrencies') {
           resultQuery = await this.convertCurrencies(
             functionParameters.amount,
@@ -110,9 +77,11 @@ export class AppService {
             functionParameters.to,
           );
         }
+
         if (functionName === 'searchGifts') {
           resultQuery = await this.searchGifts(functionParameters.gender);
         }
+
         const finalModelResponse =
           await this.generateFinalResponseWithToolOutput({
             openai,
@@ -126,31 +95,69 @@ export class AppService {
         return finalModelResponse.output_text;
       }
     } catch (error) {
-      throw error;
+      throw new InternalServerErrorException(error);
     }
+  }
+
+  /**
+   * This method executes `convertCurrencies` and `searchProducts` in a chain
+   * when the user needs to perform currency conversion for a specific product.
+   */
+  private async executeChainedFlow(
+    functions: string[],
+    query: string,
+    requiredCurrency: string,
+  ): Promise<string> {
+    let currentProduct: ExtractPriceFromDB[] | undefined;
+    const currentCurrency = 'USD';
+
+    for (const func of functions) {
+      if (func === 'searchProducts') {
+        currentProduct = await this.extractPriceFromText(query);
+      } else if (func === 'convertCurrencies') {
+        if (currentProduct) {
+          let message = '';
+
+          for (const product of currentProduct) {
+            const result = await this.getPlainRateAndCurrencies(
+              product.amount,
+              currentCurrency,
+              requiredCurrency,
+            );
+
+            message += `The price of ${product.productName} is approximately USD ${product.amount}, which is equivalent to ${result} in ${requiredCurrency}.\n`;
+          }
+
+          return message.trim();
+        } else {
+          return 'Could not extract amount to convert.';
+        }
+      }
+    }
+    return '';
   }
 
   /**
    * This method allows retrieving products based on the query value
    * from the prompt and runs only when the user is looking for gift suggestions.
    */
-
-  async searchGifts(query: string) {
+  private async searchGifts(query: string) {
     const filePath = path.join(process.cwd(), 'src/db/productsCSV.csv');
     const csvData = await new Promise<Product[]>((resolve) => {
-      const data: Product[] = [];
+      const products: Product[] = [];
       fs.createReadStream(filePath)
         .pipe(csv())
         .on('data', (row: Product) => {
+          // It converts the search text to lowercase to perform a case-insensitive comparison.
           const regex = new RegExp(`\\b${query.toLowerCase()}\\b`, 'i');
           if (
             regex.test(row.displayTitle.toLowerCase()) ||
             regex.test(row.embeddingText.toLowerCase())
           ) {
-            data.push(row);
+            products.push(row);
           }
         })
-        .on('end', () => resolve(data));
+        .on('end', () => resolve(products));
     });
     const result = csvData.slice(0, 2);
     const formattedPrompt = this.formatProductsToPrompt(result);
@@ -159,7 +166,7 @@ export class AppService {
 
   /**
    * Sets up the system context with an initial prompt, defines the model, temperature,
-   * and token limit, and handles potential errors during the API call.
+   * and token limit.
    */
   private async generateFunctionCallResponse(openai: OpenAI, message: string) {
     try {
@@ -185,7 +192,7 @@ export class AppService {
         tools,
       });
     } catch (error) {
-      throw error;
+      throw new InternalServerErrorException(error);
     }
   }
 
@@ -202,8 +209,8 @@ export class AppService {
   }: FinalCall) {
     try {
       return await openai.responses.create({
-        model: 'gpt-3.5-turbo',
-        max_output_tokens: 100,
+        model: this.configService.get('MODEL') as string,
+        max_output_tokens: +this.configService.get('MAX_OUTPUT_TOKENS'),
         input: [
           {
             role: 'user',
@@ -220,7 +227,7 @@ export class AppService {
         store: true,
       });
     } catch (error) {
-      throw error;
+      throw new InternalServerErrorException(error);
     }
   }
 
@@ -232,7 +239,7 @@ export class AppService {
   private async searchProducts(query: string): Promise<string> {
     const filePath = path.join(process.cwd(), 'src/db/productsCSV.csv');
     const csvData = await new Promise<Product[]>((resolve) => {
-      const data: Product[] = [];
+      const products: Product[] = [];
       fs.createReadStream(filePath)
         .pipe(csv())
         .on('data', (row: Product) => {
@@ -240,10 +247,10 @@ export class AppService {
             row.displayTitle.toLowerCase().includes(query.toLowerCase()) ||
             row.embeddingText.toLowerCase().includes(query.toLowerCase())
           ) {
-            data.push(row);
+            products.push(row);
           }
         })
-        .on('end', () => resolve(data));
+        .on('end', () => resolve(products));
     });
     const result = csvData.slice(0, 2);
     const formattedPrompt = this.formatProductsToPrompt(result);
@@ -267,29 +274,33 @@ export class AppService {
    * retrieved from an external API. Returns a formatted string with the result of the conversion.
    */
 
-  async convertCurrencies(amount: number, from: string, to: string) {
-    const response$ = this.httpService.get(
-      this.configService.get('EXCHANGE_URL') as string,
-      {
-        params: {
-          app_id: this.configService.get('EXCHANGE_API_KEY') as string,
+  private async convertCurrencies(amount: number, from: string, to: string) {
+    try {
+      const response$ = this.httpService.get(
+        this.configService.get('EXCHANGE_URL') as string,
+        {
+          params: {
+            app_id: this.configService.get('EXCHANGE_API_KEY') as string,
+          },
         },
-      },
-    );
+      );
 
-    const response = await firstValueFrom(response$);
+      const response = await firstValueFrom(response$);
 
-    const rates = response.data.rates;
+      const rates = response.data.rates;
 
-    const fromRate = rates[from.toUpperCase()];
-    const toRate = rates[to.toUpperCase()];
+      const fromRate = rates[from.toUpperCase()];
+      const toRate = rates[to.toUpperCase()];
 
-    if (!fromRate || !toRate) {
-      return `Exchange rate not found ${from} o ${to}`;
+      if (!fromRate || !toRate) {
+        return `Exchange rate not found ${from} o ${to}`;
+      }
+      const converted = (amount / fromRate) * toRate;
+
+      return `Conversion successful: ${amount} ${from.toUpperCase()} is equivalent to ${converted.toFixed(2)} ${to.toUpperCase()} at the current exchange rate.`;
+    } catch (error) {
+      throw new InternalServerErrorException(error);
     }
-    const converted = (amount / fromRate) * toRate;
-
-    return `Conversion successful: ${amount} ${from.toUpperCase()} is equivalent to ${converted.toFixed(2)} ${to.toUpperCase()} at the current exchange rate.`;
   }
 
   /**
@@ -297,33 +308,37 @@ export class AppService {
    * from the exchange API in the required currency and
    * just run in the chain flow path
    */
-  async getPlainRateAndCurrencies(
+  private async getPlainRateAndCurrencies(
     amount: number,
     from: string,
     to: string,
   ): Promise<string | null> {
-    const response$ = this.httpService.get(
-      this.configService.get('EXCHANGE_URL') as string,
-      {
-        params: {
-          app_id: this.configService.get('EXCHANGE_API_KEY') as string,
+    try {
+      const response$ = this.httpService.get(
+        this.configService.get('EXCHANGE_URL') as string,
+        {
+          params: {
+            app_id: this.configService.get('EXCHANGE_API_KEY') as string,
+          },
         },
-      },
-    );
+      );
 
-    const response = await firstValueFrom(response$);
+      const response = await firstValueFrom(response$);
 
-    const rates = response.data.rates;
+      const rates = response.data.rates;
 
-    const fromRate = rates[from.toUpperCase()];
-    const toRate = rates[to.toUpperCase()];
+      const fromRate = rates[from.toUpperCase()];
+      const toRate = rates[to.toUpperCase()];
 
-    if (!fromRate || !toRate) {
-      return null;
+      if (!fromRate || !toRate) {
+        return null;
+      }
+      const converted = (amount / fromRate) * toRate;
+
+      return converted.toFixed(2);
+    } catch (error) {
+      throw new InternalServerErrorException(error);
     }
-    const converted = (amount / fromRate) * toRate;
-
-    return converted.toFixed(2);
   }
 
   /**
@@ -365,8 +380,7 @@ export class AppService {
       const parsed = JSON.parse(content || '[]');
       return Array.isArray(parsed) ? parsed : [];
     } catch (error) {
-      console.warn('Could not parse function detection response:', error);
-      return [];
+      throw new InternalServerErrorException(error);
     }
   }
 
@@ -396,10 +410,10 @@ export class AppService {
               
               Examples:
               User: "I want to convert 100 pesos to dollars" → "USD"
-              User: "¿Cuánto es 50 euros en yenes?" → "JPY"
-              User: "Cambio de 100 soles a dólares" → "USD"
-              User: "Pásame el precio en libras" → "GBP"
-              User: "Quiero saber el cambio actual" → "UNKNOWN"
+              User: "How much is 50 euros in yen?" → "JPY"
+              User: "Exchange 100 soles to dollars" → "USD"
+              User: "Give me the price in pounds" → "GBP"
+              User: "I want to know the current exchange rate" → "UNKNOWN"
             `,
           },
           {
@@ -412,8 +426,7 @@ export class AppService {
       const content = response.choices[0].message.content;
       return content;
     } catch (error) {
-      console.warn('Could not parse function detection response:', error);
-      return '';
+      throw new InternalServerErrorException(error);
     }
   }
   /*
@@ -422,9 +435,10 @@ export class AppService {
    */
 
   private getAveragePrice(priceString: string): number | null {
-    const regex = /(\d+(?:\.\d+)?)\s*-\s*(\d+(?:\.\d+)?)/;
+    //It is used to detect a numeric range with a hyphen.
+    const hyphenRangeRegex = /(\d+(?:\.\d+)?)\s*-\s*(\d+(?:\.\d+)?)/;
 
-    const match = priceString.match(regex);
+    const match = priceString.match(hyphenRangeRegex);
     if (match) {
       const price1 = parseFloat(match[1]);
       const price2 = parseFloat(match[2]);
